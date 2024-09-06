@@ -1,0 +1,19 @@
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+generator client {
+    provider                    = "prisma-client-py"
+    output                      = "./prismadb"
+    interface                   = "asyncio"
+    enable_experimental_decimal = true
+    recursive_type_depth        = 5
+}
+
+model user {
+    id         String @id @default(uuid())
+    user_email String @unique
+    name       String
+    created_at DateTime @default(now())
+}

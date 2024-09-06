@@ -1,0 +1,13 @@
+@url = http://localhost:8000
+
+
+#####
+POST {{url}}/api/login
+password: 1234
+Content-Type: application/json
+
+{
+    "name" : "some",
+    "user_email": "some1233@snjwewewdsd.com"
+}
+
