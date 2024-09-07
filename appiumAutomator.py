@@ -2,50 +2,54 @@
 from appium import webdriver
 from appium.webdriver.common.appiumby import AppiumBy
 from appium.options.android import UiAutomator2Options
-from appium.options.common import AppiumOptions
+import time
 
 import time
 
 def setup_driver():
-    # Define desired capabilities
-    desired_cap = {
-        "platformName": "Android",
-        "appPackage": "com.ayaplus.subscriber.development",
-        "platformVersion": "13.0",
-        "deviceName": "One Plus", 
-        "appAcitivity": "com.ayaplus.subscriber.MainActivity",
-        "automationName": "UiAutomator2",
-        "udid" : "e8fbb12d",
-        "appWaitForLaunch" : False,
-        "appium:appWaitActivity": "*"
-    }
+    options = UiAutomator2Options()
+    options.platform_name = "Android"
+    options.app_package = "com.sololearn"
+    options.platform_version = "13.0"
+    options.device_name = "One Plus"
+    options.app_activity = "com.sololearn.app.ui.launcher.LauncherActivity"  # Corrected typo here
+    options.automation_name = "UiAutomator2"
+    options.udid = "e8fbb12d"
+    options.app_wait_for_launch = False
+    options.set_capability("appium:appWaitActivity", "*")
 
-    driver = webdriver.Remote("http://localhost:4724", options=UiAutomator2Options().load_capabilities(desired_cap))
+    driver = webdriver.Remote("http://localhost:4724", options=options)
     return driver
 
-def login(driver, username, password):
-    # Locate and interact with login elements
-    driver.find_element(AppiumBy.ID, "com.ayaplus.subscriber.development/login_button").click()
+def login(driver):
+    driver.find_element(AppiumBy.ID, "com.sololearn:id/continueWithGoogle").click()
+    time.sleep(2)
+    elements = driver.find_elements(AppiumBy.ID, "com.google.android.gms:id/account_name")
+    for element in elements:
+      if element.text == "nayoolwinpersonal@gmail.com":
+          driver.find_element(AppiumBy.ID, "com.google.android.gms:id/account_name").click()
+          break
 
-def navigate_and_submit_data(driver):
-    # Navigate through the app and submit data
-    driver.find_element(AppiumBy.ID, "com.ayaplus.subscriber.development/navigate_button").click()
-    driver.find_element(AppiumBy.ID, "com.ayaplus.subscriber.development/data_input").send_keys("Sample Data")
-    driver.find_element(AppiumBy.ID, "com.ayaplus.subscriber.development/submit_button").click()
-
+def navigate(driver):
+    
+    elements = driver.find_elements(AppiumBy.ID, "com.sololearn:id/title")
+    for element in elements:
+      if element.text == "Overview":
+          driver.find_element(AppiumBy.ID, "com.sololearn:id/iconExpandState").click()
+          sub_elements = driver.find_elements(AppiumBy.ID, "com.sololearn:id/title")
+          for sub_element in sub_elements:
+            if sub_element.text == "Your First Lesson":
+              driver.find_element(AppiumBy.ID, "com.sololearn:id/title").click()
+              time.sleep(4)
+              break
+      
 def main():
     driver = setup_driver()
-    try:
-        # Perform login
-        login(driver, "testuser", "password123")
-        time.sleep(2)  # Wait for login to complete
-
-        # Navigate and submit data
-        navigate_and_submit_data(driver)
-        time.sleep(2)  # Wait for submission to complete
-
-    finally:
-        driver.quit()
+    time.sleep(8)  
+    login(driver)
+    time.sleep(8)
+    navigate(driver)
+    time.sleep(10)
 
 if __name__ == "__main__":
     main()
