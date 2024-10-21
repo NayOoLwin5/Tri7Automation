@@ -113,23 +113,29 @@ def batch_pulling_task(device_id):
                 result = f"{formatted_date} | {title_text} - {tnx_id_text} - {remark_text} - {formatted_datetime} - {amount_text} | {transaction_type} | {amount_numeric} | {str(float(0))}"
                 print(result)
 
-            # previous_transactions = [t.info for t in d(resourceId=transaction_title_id)]
+            previous_transactions = [t.info for t in d(resourceId=transaction_title_id)]
 
-            # bounds = recent_field.info['bounds']
-            # x = (bounds['left'] + bounds['right']) // 2
-            # y = bounds['bottom'] + 200
-            # start_x, start_y = x, y + 500
-            # end_x, end_y = x, y
-            # d.swipe(start_x, start_y, end_x, end_y, duration=0.5)
-            # try:
-            #     d(resourceId=transaction_title_id).wait(timeout=10)
-            # except UiObjectNotFoundError:
-            #     break
+            # Get the bounds of the last transaction item
+            last_transaction = d(resourceId=transaction_title_id).info['bounds']
+            start_x = (last_transaction['left'] + last_transaction['right']) // 2
 
-            # current_transactions = [t.info for t in d(resourceId=transaction_title_id)]
-            # if previous_transactions == current_transactions:
-            #     print("No more transactions found. Exiting batch pulling.")
-            #     break
+            # Get the bounds of the 'Recent' field for the end position
+            recent_bounds = recent_field.info['bounds']
+            end_x = (recent_bounds['left'] + recent_bounds['right']) // 2
+            end_y = recent_bounds['top'] + 70
+
+            # Perform the swipe
+            d.swipe(start_x, 1400, end_x, end_y, duration=5)
+
+            try:
+                d(resourceId=transaction_title_id).wait(timeout=10)
+            except UiObjectNotFoundError:
+                break
+
+            current_transactions = [t.info for t in d(resourceId=transaction_title_id)]
+            if previous_transactions == current_transactions:
+                print("No more transactions found. Exiting batch pulling.")
+                break
 
         except UiObjectNotFoundError:
             print("No more transactions found or failed to scroll. Exiting batch pulling.")
