@@ -337,32 +337,32 @@ class RetrieveTransactionHistory:
 
         return current, active, pending, scheduled
 
-    def __purge_tasks_in_queue(self, queue_name):
-        try:
-            # Inspect the workers to get the reserved tasks
-            i = app.control.inspect()
+    # def __purge_tasks_in_queue(self, queue_name):
+    #     try:
+    #         # Inspect the workers to get the reserved tasks
+    #         i = app.control.inspect()
 
-            # Purge reserved tasks
-            reserved_tasks = i.reserved()
-            if reserved_tasks:
-                for worker, tasks in reserved_tasks.items():
-                    for task in tasks:
-                        if task['delivery_info']['routing_key'] == queue_name:
-                            app.control.revoke(task['id'], terminate=True)
-                            print(f"Revoked reserved task {task['id']} from queue {queue_name}.")
+    #         # Purge reserved tasks
+    #         reserved_tasks = i.reserved()
+    #         if reserved_tasks:
+    #             for worker, tasks in reserved_tasks.items():
+    #                 for task in tasks:
+    #                     if task['delivery_info']['routing_key'] == queue_name:
+    #                         app.control.revoke(task['id'], terminate=True)
+    #                         print(f"Revoked reserved task {task['id']} from queue {queue_name}.")
 
-            # Purge pending tasks from the specified queue
-            with app.connection_or_acquire() as conn:
-                queue = app.amqp.queues.get(queue_name)
+    #         # Purge pending tasks from the specified queue
+    #         with app.connection_or_acquire() as conn:
+    #             queue = app.amqp.queues.get(queue_name)
                 
-                # Ensure the queue is bound to a channel
-                queue = queue.bind(conn.default_channel)
+    #             # Ensure the queue is bound to a channel
+    #             queue = queue.bind(conn.default_channel)
 
-                num_tasks_purged = queue.purge()
-                print(f"Purged {num_tasks_purged} pending tasks from queue {queue_name}.")
+    #             num_tasks_purged = queue.purge()
+    #             print(f"Purged {num_tasks_purged} pending tasks from queue {queue_name}.")
 
-        except Exception as e:
-            self.__handle_error(e)
+    #     except Exception as e:
+    #         self.__handle_error(e)
 
     def __handle_error(self, error: Exception):
         print(f"An error occurred: {error}")
@@ -551,7 +551,7 @@ class RetrieveTransactionHistory:
                 self.IS_AUTHENTICATED = True
 
             # TODO: monitoring after go to transction history page should be purge all pending and served task.
-            self.__purge_tasks_in_queue(self.TASK_QUEUE)
+            # self.__purge_tasks_in_queue(self.TASK_QUEUE)
         except Exception as e:
             print(e)
             self.__handle_error(e)
@@ -677,7 +677,7 @@ class RetrieveTransactionHistory:
             except Exception:
                 break
 
-        if final_transactions[0]:
+        if final_transactions:
             tracker = TransactionChangeTracker(self.TASK_NAME, self.ACCOUNT_ID)
             tracker.process_transaction_round(final_transactions)
             # endpoint = f'{BACKEND_ENDPOINT}/transactions'
@@ -737,6 +737,8 @@ class RetrieveTransactionHistory:
                 time.sleep(1)  # Give it a moment to change activity
                 current_app = self.DEVICE.app_current()
                 current_activity = current_app['activity']
+
+            self.IS_PAUSED = False
         
         print("Navigated back to home.")
         countdown = 10
@@ -831,6 +833,7 @@ class RetrieveTransactionHistory:
             print(e)
             self.__handle_error(e)
         finally:
+            print("Session expired. Finalizing...")
             self.__finalize()
 
 
