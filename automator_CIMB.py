@@ -18,10 +18,13 @@ from celery.app.control import Control, Inspect
 from celery.exceptions import Ignore
 from icecream import ic
 from redis_om import Field, JsonModel, Migrator, NotFoundError, get_redis_connection
+from automations.tasks import app
+from uiautomator2 import UiObjectNotFoundError, XPathElementNotFoundError, HTTPTimeoutError
+
 
 dotenv.load_dotenv()
 
-BACKEND_ENDPOINT = os.getenv('BACKEND_ENDPOINT', 'http://localhost/api')
+BACKEND_ENDPOINT = os.getenv('BACKEND_ENDPOINT', 'https://staging-api.justmat.pro/api')
 MINIMUM_PAUSE_TIME = int(os.getenv('MINIMUM_PAUSE_TIME', 20))
 MAXIMUM_PAUSE_TIME = int(os.getenv('MAXIMUM_PAUSE_TIME', 45))
 MINIMUM_LIFETIME = int(os.getenv('MINIMUM_LIFETIME', 10 * 60))
@@ -38,7 +41,7 @@ TRANSACTIONS_ACTIVITY = '.uat.modules.myaccount.view.detailv2.casa.presentation.
 UPDATE_AVAILABLE_ACTIVITY = 'com.google.android.finsky.playcoreacquisition.PlayCoreAcquisitionActivity'
 
 redis_connection = get_redis_connection(
-    host="localhost", port=6379, decode_responses=True
+    host="broker", port=6379, decode_responses=True
 )
 
 def test_redis_connection():
@@ -53,7 +56,7 @@ def test_redis_connection():
 if __name__ == "__main__":
     if not test_redis_connection():
         print("Exiting due to Redis connection failure")
-        sys.exit(1)
+        # sys.exit(1)
 
 
 def truncate_database() -> None:
@@ -191,70 +194,21 @@ class TransactionChangeTracker:
             for transaction in transactions:
                 transaction_parts = transaction.split(" | ")
 
-                transaction_date = str(transaction_parts[0]).strip().upper()
-                transaction_remark = str(transaction.split(' | ', 1)[1]).strip().upper()
-                transaction_code = str("").strip().upper()
-                transaction_channel = str(transaction_parts[2]).strip().upper()
-                transaction_amount = f'{float(transaction_parts[-1].replace("IDR ", "").replace(",", "")):.2f}'
-                transaction_balance = f'{float(0):.2f}'
-
-                transaction_type_mapping = {
-                    'BIAYA ADM': 'DB',
-                    'BIAYA KARTU ATM': 'DB',
-                    'PAJAK BUNGA': 'DB',
-                    'SWITCHING DB': 'DB',
-                    'TRSF E-BANKING DB': 'DB',
-                    'BI-FAST DB': 'DB',
-                    'BUNGA': 'CR',
-                    'SWITCHING CR': 'CR',
-                    'TRSF E-BANKING CR': 'CR',
-                    'BI-FAST CR': 'CR',
-                    'SETORAN VIA CDM': 'CR'
-                }
-                transaction_type = transaction_type_mapping.get(transaction_channel.strip().upper(), 'DB')
+                transaction_date = transaction_parts[0]
+                transaction_remark_group = transaction_parts[1].split('--')
+                transaction_channel = transaction_remark_group[0].strip().upper()
+                clean_transaction_account_name = transaction_remark_group[1].strip().upper()
+                transaction_remark = transaction_remark_group[2].strip().upper()
+                transaction_code = transaction_remark_group[3].strip().upper()
+                transaction_amount = transaction_parts[3]
+                transaction_balance = '0.00'
+                transaction_type = transaction_parts[2]
 
                 transaction_date_object = datetime.strptime(transaction_date, "%Y-%m-%d").date()
                 current_date = now.date()
 
                 if transaction_date_object != current_date:
                     continue
-
-                transaction_account_name = transaction_remark
-
-                if transaction_channel not in ['BIAYA ADM', 'BIAYA KARTU ATM', 'BUNGA', 'PAJAK BUNGA']:
-                    transaction_account_name_pattern = None
-                    transaction_account_name_matched_group = None
-
-                    if transaction_channel in ['SWITCHING CR', 'SWITCHING DB']:
-                        transaction_account_name_pattern = r'(TRANSFER\s{1,}\w{2}\s\d{3}\s{1,}|BIAYA\s{1,}TXN\s{1,}KE\s{1,}\d{3}\s|TRF\s{1,}-?\s?[A-Za-z]+[\d@]+[\w@]*\s|TRF\s{1,}-?\s?[\d@]+[A-Za-z]+[\w@]*\s|TRF\s-?\s?|TANGGAL\s{1,}:[\d/]{3,}\sTRF\s|TANGGAL\s{1,}:[\d/]{3,}\s|TANGGAL\s{1,})(.*?(?=,)|.*?)\s?(,.+|\d{3,}.*|MYBCA.*)$'
-                        transaction_account_name_matched_group = 2
-
-                    elif transaction_channel in ['TRSF E-BANKING CR', 'TRSF E-BANKING DB']:
-                        transaction_account_name_pattern = r'(?<=\.\d{2}\s)\D+$|(?<=-\s-\s).*|(?<=\d{2}\/\d{2}\s\S{5}\s).*|(?<=TRFDN-)[A-Z\s]+?(?=\s{1,}ESPAY|$)'
-                        transaction_account_name_matched_group = 0
-
-                    elif transaction_channel in ['BI-FAST CR', 'BI-FAST DB']:
-                        transaction_account_name_pattern = r'(BIAYA\s{1,}TXN\s{1,}KE\s{1,}\d{3}|TRANSFER\s{1,}\w{2}\s\d{3})\s(.*?)(?:\sMYBCA)?$'
-                        transaction_account_name_matched_group = 2
-
-                    elif transaction_channel in ['SETORAN VIA CDM']:
-                        transaction_account_name_pattern = r'(?:\d{2}\/\d{2}\s{1,}\S{1,}\s{1,})(.*)$'
-                        transaction_account_name_matched_group = 1
-
-                    if transaction_account_name_pattern:
-                        transaction_account_name_regex = re.compile(transaction_account_name_pattern)
-                        matches = [match.group(transaction_account_name_matched_group).strip() for match in transaction_account_name_regex.finditer(transaction_parts[1])]
-                        if matches:
-                            transaction_account_name = matches[0]
-                        else:
-                            transaction_account_name = transaction_account_name
-                    else:
-                        transaction_account_name = transaction_account_name
-
-                    name_prefixes = ['BAPAK', 'PAK', 'IBU', 'BU', 'KAKAK', 'ADIK', 'HAJI', 'HAJJAH', 'RADEN', 'BPK', 'SDRI', 'SDR']
-
-                    clean_transaction_account_name_regex = r'^(?:' + '|'.join(name_prefixes) + r')\s+'
-                    clean_transaction_account_name = re.sub(clean_transaction_account_name_regex, '', transaction_account_name, flags=re.IGNORECASE)
 
                 print({
                     'account_id': inflection.dasherize(self.TASK_NAME.split('.')[0]).upper(),
@@ -415,10 +369,8 @@ class RetrieveTransactionHistory:
                     self.IS_PAUSED = True
 
                     # Press back button until the target activity is reached
-                    while current_activity != target_activity:
-                        if current_activity not in [HOME_ACTIVITY] or current_app['package'] != PACKAGE_NAME:
-                            print(f"Restarting app {PACKAGE_NAME}, Unauthenticate detected.")
-                            self.DEVICE.app_start(PACKAGE_NAME)
+                    while current_activity != target_activity:  
+                        if current_activity == target_activity:
                             break
 
                         print(f"Press back button because the app is not in target activity.")
@@ -491,8 +443,10 @@ class RetrieveTransactionHistory:
     def __watcher_check_popup(self):
         self.DEVICE.watcher("knock_knock_watcher").when('//android.widget.TextView[@text="Knock, knock, are you there?"]').when('//android.widget.Button[@text="Yes, I’m still here"]').click()
         self.DEVICE.watcher("no_internet_watcher").when('//android.widget.TextView[@text="No internet connection"]').when('//android.widget.Button[@text="Retry"]').click()
+        self.DEVICE.watcher("unable_to_request_watcher").when('//android.widget.TextView[@text="Unable to process this request"]').when('//android.widget.Button[@text="Retry"]').click()
         self.DEVICE.watcher("session_expired_watcher").when('//android.widget.TextView[@text="Your session has expired"]').when('//android.widget.Button[@text="Login"]').click()
         self.DEVICE.watcher("generic_ok_watcher").when('//android.widget.TextView[@text="No internet connection"]').when('//android.widget.Button[@text="OK"]').click()
+        self.DEVICE.watcher("login_cancel_watcher").when('//android.widget.TextView[@text="You will be asked to login the next time you open OCTO Mobile."]').when('//android.widget.Button[@text="Cancel"]').click()
         self.DEVICE.watcher.start()
         time.sleep(1)
 
@@ -557,195 +511,213 @@ class RetrieveTransactionHistory:
             self.__handle_error(e)
 
     def _collect(self):
-        if not self.__wait_for_exists(activity=TRANSACTIONS_ACTIVITY):
-            return
+        try:
+            if not self.__wait_for_exists(activity=TRANSACTIONS_ACTIVITY):
+                return
 
-        recent_text = "Recent"
-        recent_field = self.DEVICE.xpath(f'//android.widget.TextView[@text="{recent_text}"]')
-        
-        while not recent_field.exists:
-            print("Waiting for 'Recent' text field to appear...")
-            time.sleep(1)
+            recent_text = "Recent"
             recent_field = self.DEVICE.xpath(f'//android.widget.TextView[@text="{recent_text}"]')
-
-        print("'Recent' text field appeared. Starting batch pulling...")
-
-        segment_line_class = "android.widget.LinearLayout"
-        recycler_view_id = "id.co.cimbniaga.mobile.android:id/rv_transaction"
-        transaction_title_id = "id.co.cimbniaga.mobile.android:id/tv_remarks_title"
-        transaction_value_id = "id.co.cimbniaga.mobile.android:id/tv_transaction_value"
-
-        printed_items = set()
-
-        tracker = TransactionChangeTracker(self.TASK_NAME, self.ACCOUNT_ID)
-        existing_transactions = tracker.fetch_existing_transactions()
-        is_first_run = len(existing_transactions) == 0
-        current_date = tracker.get_current_transaction_date()
-
-        max_transactions = float('inf') if is_first_run else 15
-        transaction_count = 0
-        final_transactions = []
-
-        while True:
-            recycler_view = self.DEVICE(resourceId=recycler_view_id)
-            transaction_items = recycler_view.child(className="android.view.ViewGroup")
-
-            previous_transactions = [t.info for t in recycler_view.child(resourceId=transaction_title_id)]
             
-            last_transaction = recycler_view.child(resourceId=transaction_title_id)[-1].info['bounds']
-            start_x = (last_transaction['left'] + last_transaction['right']) // 2
-            
-            recent_bounds = recent_field.info['bounds']
-            end_x = (recent_bounds['left'] + recent_bounds['right']) // 2
-            end_y = recent_bounds['top'] + 70
-
-            segment_lines = self.DEVICE(className=segment_line_class)
-            if segment_lines:
-                last_segment_line = segment_lines[-1].info['bounds']
-                start_y = last_segment_line['bottom']
-            else:
-                start_y = 1400
-            
-            max_iterations = 3
-            is_last_swipe = False
-
-            if len(printed_items) > 0:
-                self.DEVICE.swipe(start_x, start_y, end_x, end_y, duration=0.5)
+            while not recent_field.exists:
+                print("Waiting for 'Recent' text field to appear...")
                 time.sleep(1)
-            
-                current_transactions = [t.info for t in self.DEVICE(resourceId=transaction_title_id)]
-                is_last_swipe = previous_transactions == current_transactions
-                max_iterations = 4 if is_last_swipe else max_iterations
+                recent_field = self.DEVICE.xpath(f'//android.widget.TextView[@text="{recent_text}"]')
 
-            transactions = []
-            for i, item in enumerate(transaction_items):
-                if i >= max_iterations:
-                    break
-                visible_texts = [text.get_text() for text in item.child(className="android.widget.TextView")]
-                
-                transaction = tuple(text for text in visible_texts if text != '00' and 'IDR' not in text)
-                
-                transaction_value = item.child(resourceId=transaction_value_id).get_text()
-                if any('IDR' in text for text in visible_texts):
-                    transaction += (transaction_value,)
-                if transaction and transaction not in printed_items:
-                    transactions.append(transaction)
-                    printed_items.add(transaction)
+            print("'Recent' text field appeared. Starting batch pulling...")
 
-            for transaction in transactions:
-                try:
-                    transaction_date = datetime.strptime(transaction[1], '%d %b %Y %H:%M').strftime('%Y-%m-%d')
-                    if transaction_date != current_date:
-                        print(f"Transaction date {transaction_date} is not current date. Skipping.")
-                        continue
+            segment_line_class = "android.widget.LinearLayout"
+            recycler_view_id = "id.co.cimbniaga.mobile.android:id/rv_transaction"
+            transaction_title_id = "id.co.cimbniaga.mobile.android:id/tv_remarks_title"
+            transaction_value_id = "id.co.cimbniaga.mobile.android:id/tv_transaction_value"
 
-                    formatted_date = time.strftime('%Y-%m-%d', time.strptime(transaction[1], '%d %b %Y %H:%M'))
-                    formatted_datetime = time.strftime('%Y-%m-%dT%H:%M:%S+0700', time.strptime(transaction[1], '%d %b %Y %H:%M'))
-                    title_text = transaction[0]
-                    memo1_text = "?" if len(transaction) <= 3 or transaction[2] == "-" else transaction[2]
-                    memo2_text = "?" if len(transaction) <= 4 or transaction[3] == "-" else transaction[3]
-                    memo3_text = "?" if len(transaction) <= 5 or transaction[4] == "-" else transaction[4]
-                    amount_text = transaction[-1]
-                    transaction_type = "DB" if "-" in amount_text else "CR" if "+" in amount_text else "?"
-                    amount_numeric = float(amount_text.replace("IDR", "").replace("-", "").replace("+", "").replace(",", "").strip())
-                    
-                    memo2_text = self._process_memo(title_text, memo2_text)
-                    memo1_text = self._process_memo(title_text, memo1_text)
-                    
-                    memos = [memo1_text, memo2_text, memo3_text]
-                    non_question_memos = [memo for memo in memos if memo != "?"]
-                    question_memos = [memo for memo in memos if memo == "?"]
-                    all_memos = " -- ".join(non_question_memos + question_memos)
-                    result = f"{formatted_date} | {title_text} -- {all_memos} -- {amount_text} -- {formatted_datetime} | {transaction_type} | {amount_numeric} | {str(float(0))}"
-                    print(result)
+            printed_items = set()
 
-                    final_transactions.append(result)
-                    transaction_count += 1
-                    if transaction_count >= max_transactions:
-                        print(f"Reached maximum of {max_transactions} transactions. Exiting batch pulling.")
-                        return
-                except (IndexError, ValueError) as e:
-                    print(f"Error processing transaction: {transaction}. Error: {str(e)}")
-
-            
-            if is_last_swipe:
-                print("No more transactions found. Exiting batch pulling.")
-                break
-
-            try:
-                self.DEVICE(resourceId=transaction_title_id).wait(timeout=7)
-            except Exception:
-                break
-
-        if final_transactions:
             tracker = TransactionChangeTracker(self.TASK_NAME, self.ACCOUNT_ID)
-            tracker.process_transaction_round(final_transactions)
-            # endpoint = f'{BACKEND_ENDPOINT}/transactions'
-            # headers = {
-            #     "Accept": "application/json",
-            #     "Content-Type": "application/json"
-            # }
-            # data = {
-            #     'transactions': transformed_transactions
-            # }
-            # print(f'Endpoint => {endpoint}')
-            # print(f'Headers => {headers}')
-            # print(f'Data => {data}')
-            # response = requests.post(endpoint, headers=headers, json=data)
-            # print(f'Response => {response}')
-            
-            # if response.status_code == 200:
-            #     print("Insert transaction request was successful.")
-            #     print("Response:", response.json())
-            # else:
-            #     print(f"Request failed with status code {response.status_code}.")
-            #     print("Response:", response.text)
+            existing_transactions = tracker.fetch_existing_transactions()
+            is_first_run = len(existing_transactions) == 0
+            current_date = tracker.get_current_transaction_date()
 
-            # endpoint = f'{BACKEND_ENDPOINT}/accounts/{self.ACCOUNT_ID}/update-balance'
-            # headers = {
-            #     # "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxIiwianRpIjoiZWViZGVkYTMxNGRmNDQ3OTZiZmM5ZTg5ZWFiNGMyMWNlM2VlZjAyMWEyNmM3MTVlZWU0YWNhZWY0OWRjNDk4OTJkNzc2OWNkMjRhMGM1N2EiLCJpYXQiOjE3MDc0NDk3NzYuMzk2MzQ5LCJuYmYiOjE3MDc0NDk3NzYuMzk2MzUzLCJleHAiOjIwMjMwNjg5NzYuMzg3MjgzLCJzdWIiOiIyMDMxNjYiLCJzY29wZXMiOltdfQ.ktIFoRYgblN7ZRRgHYdpBbff3JdKjjGixWQgANIDDGuDJf5T7e0vrUcZp7wFUhYdFarAIavdNzBNJtMJDjaHDM5UB3wSlHQjH15sprXbnOeq6PCvTHBCEpS8V4JNsfy1UjUNNo_IFta9CMNcweDM8OxJ3PbJHNX8xZyFBwQ7AHNGtDaChV4-C1tODcuClLOJXZetixsNFqm2lP9tiSG6E5iBHzR0ko2RtnMK4jkUzXu2eaOPAeUDWNuow-gd-yZBJPZ44IQ4BPq1JcZxbgaKq3uLRzJwnNmkwvF1zOHIEVELINIoydthldR-aNcxIG8Q3AKM3LH4tVqmaUxJ5iPV30dab6vsKFwsYHZr9NGD0fuPA8--X9yVfJR4Yc08CULPYh1aTqkVtlo_1DXihCl8Gj9mQ6Poago0NBFdd-j6FY8qxVFDBmxmLzPcIhnKgR_IxXYabFGRm89dYcHIJD7cLuhNVgIZar94qBe66dLjrfZxgIp04uTYwLfNwX5GrtXVGfWz2CdFcaz1FwIoTf6B2L7M_Oasg7XjiZdKTRUjHI8bLIEx4FHVLZLO4iHWp79S9mHxc4fTbz3aFD-z50iGmnkkoEj99pYwnJ2X6NkTklaqkBrXAC3_x6vOXvB1r_V4jMr5G9DPoKiiG4fUFLBNrey_hN2R6T3lew_UZLp7X7E",
-            #     "Accept": "application/json",
-            #     "Content-Type": "application/json"
-            # }
-            # data = {
-            #     'balance': account_balance_number
-            # }
-            # print(f'Endpoint => {endpoint}')
-            # print(f'Headers => {headers}')
-            # print(f'Data => {data}')
-            # response = requests.put(endpoint, headers=headers, json=data)
-            # print(f'Response => {response}')
+            max_transactions = float('inf') if is_first_run else 15
+            transaction_count = 0
+            final_transactions = []
+            start_time = time.time()
 
-            # self.IS_TASK_COMPLETE = True
-            # return # raise SystemExit(0)
-        print("All transactions collected. Navigating back to home...")
-        time.sleep(5)
-        current_app = self.DEVICE.app_current()
-        current_activity = current_app['activity']
-        if current_activity != HOME_ACTIVITY:
-            self.IS_PAUSED = True
+            while True:
+                recycler_view = self.DEVICE(resourceId=recycler_view_id)
+                transaction_items = recycler_view.child(className="android.view.ViewGroup")
 
-            # Press back button until the target activity is reached
-            while current_activity != HOME_ACTIVITY:
-                if current_activity not in [HOME_ACTIVITY] or current_app['package'] != PACKAGE_NAME:
-                    print(f"Restarting app {PACKAGE_NAME}, Unauthenticate detected.")
-                    self.DEVICE.app_start(PACKAGE_NAME)
+                previous_transactions = [t.info for t in recycler_view.child(resourceId=transaction_title_id)]
+                
+                last_transaction = recycler_view.child(resourceId=transaction_title_id)[-1].info['bounds']
+                start_x = (last_transaction['left'] + last_transaction['right']) // 2
+                
+                recent_bounds = recent_field.info['bounds']
+                end_x = (recent_bounds['left'] + recent_bounds['right']) // 2
+                end_y = recent_bounds['top'] + 70
+
+                segment_lines = self.DEVICE(className=segment_line_class)
+                if segment_lines:
+                    last_segment_line = segment_lines[-1].info['bounds']
+                    start_y = last_segment_line['bottom']
+                else:
+                    start_y = 1400
+                
+                max_iterations = 3
+                is_last_swipe = False
+                is_not_current_date = False
+
+                if len(printed_items) > 0:
+                    self.DEVICE.swipe(start_x, start_y, end_x, end_y, duration=0.5)
+                    time.sleep(1)
+                
+                    current_transactions = [t.info for t in self.DEVICE(resourceId=transaction_title_id)]
+                    is_last_swipe = previous_transactions == current_transactions
+                    max_iterations = 4 if is_last_swipe else max_iterations
+
+                transactions = []
+                for i, item in enumerate(transaction_items):
+                    if i >= max_iterations:
+                        break
+                    visible_texts = [text.get_text() for text in item.child(className="android.widget.TextView")]
+                    
+                    transaction = tuple(text for text in visible_texts if text != '00' and 'IDR' not in text)
+                    
+                    transaction_value = item.child(resourceId=transaction_value_id).get_text()
+                    if any('IDR' in text for text in visible_texts):
+                        transaction += (transaction_value,)
+                    if transaction and transaction not in printed_items:
+                        transactions.append(transaction)
+                        printed_items.add(transaction)
+
+                for transaction in transactions:
+                    try:
+                        transaction_date = datetime.strptime(transaction[1], '%d %b %Y %H:%M').strftime('%Y-%m-%d')
+                        if transaction_date != current_date:
+                            print(f"Transaction date {transaction_date} is not current date. Breaking loop.")
+                            is_not_current_date = True
+                            break
+                            
+
+                        formatted_date = time.strftime('%Y-%m-%d', time.strptime(transaction[1], '%d %b %Y %H:%M'))
+                        formatted_datetime = time.strftime('%Y-%m-%dT%H:%M:%S+0700', time.strptime(transaction[1], '%d %b %Y %H:%M'))
+                        title_text = transaction[0]
+                        memo1_text = "?" if len(transaction) <= 3 or transaction[2] == "-" else transaction[2]
+                        memo2_text = "?" if len(transaction) <= 4 or transaction[3] == "-" else transaction[3]
+                        memo3_text = "?" if len(transaction) <= 5 or transaction[4] == "-" else transaction[4]
+                        amount_text = transaction[-1]
+                        transaction_type = "DB" if "-" in amount_text else "CR" if "+" in amount_text else "?"
+                        amount_numeric = float(amount_text.replace("IDR", "").replace("-", "").replace("+", "").replace(",", "").strip())
+                        
+                        memo2_text = self._process_memo(title_text, memo2_text)
+                        memo1_text = self._process_memo(title_text, memo1_text)
+                        
+                        memos = [memo1_text, memo2_text, memo3_text]
+                        non_question_memos = [memo for memo in memos if memo != "?"]
+                        question_memos = [memo for memo in memos if memo == "?"]
+                        all_memos = " -- ".join(non_question_memos + question_memos)
+                        result = f"{formatted_date} | {title_text} -- {all_memos} -- {amount_text} -- {formatted_datetime} | {transaction_type} | {amount_numeric} | {str(float(0))}"
+                        print(result)
+
+                        final_transactions.append(result)
+                        transaction_count += 1
+                        if transaction_count >= max_transactions:
+                            print(f"Reached maximum of {max_transactions} transactions. Exiting batch pulling.")
+                            return
+                    except (IndexError, ValueError) as e:
+                        print(f"Error processing transaction: {transaction}. Error: {str(e)}")
+
+                if is_not_current_date:
                     break
 
-                print(f"Press back button because the app is not in target activity.")
-                self.DEVICE.press("back")
-                time.sleep(1)  # Give it a moment to change activity
-                current_app = self.DEVICE.app_current()
-                current_activity = current_app['activity']
+                if is_last_swipe:
+                    print("No more transactions found. Exiting batch pulling.")
+                    break
 
-            self.IS_PAUSED = False
-        
-        print("Navigated back to home.")
-        countdown = 10
-        while countdown > 0:
-            print(f"Collecting transactions in {countdown} seconds...", end="\r")
-            time.sleep(1)
-            countdown -= 1
+                try:
+                    self.DEVICE(resourceId=transaction_title_id).wait(timeout=7)
+                except Exception:
+                    break
+
+            if final_transactions:
+                tracker = TransactionChangeTracker(self.TASK_NAME, self.ACCOUNT_ID)
+                tracker.process_transaction_round(final_transactions)
+
+                transformed_transactions = tracker.transform_transactions()
+                print(f'transformed_transactions => {transformed_transactions}')
+
+                
+                endpoint = f'{BACKEND_ENDPOINT}/transactions'
+                headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
+                data = {
+                    'transactions': transformed_transactions
+                }
+                print(f'Endpoint => {endpoint}')
+                print(f'Headers => {headers}')
+                print(f'Data => {data}')
+                response = requests.post(endpoint, headers=headers, json=data)
+                print(f'Response => {response}')
+                
+                if response.status_code == 200:
+                    print("Insert transaction request was successful.")
+                    print("Response:", response.json())
+                else:
+                    print(f"Request failed with status code {response.status_code}.")
+                    print("Response:", response.text)
+
+                endpoint = f'{BACKEND_ENDPOINT}/accounts/{self.ACCOUNT_ID}/update-balance'
+                headers = {
+                    # "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxIiwianRpIjoiZWViZGVkYTMxNGRmNDQ3OTZiZmM5ZTg5ZWFiNGMyMWNlM2VlZjAyMWEyNmM3MTVlZWU0YWNhZWY0OWRjNDk4OTJkNzc2OWNkMjRhMGM1N2EiLCJpYXQiOjE3MDc0NDk3NzYuMzk2MzQ5LCJuYmYiOjE3MDc0NDk3NzYuMzk2MzUzLCJleHAiOjIwMjMwNjg5NzYuMzg3MjgzLCJzdWIiOiIyMDMxNjYiLCJzY29wZXMiOltdfQ.ktIFoRYgblN7ZRRgHYdpBbff3JdKjjGixWQgANIDDGuDJf5T7e0vrUcZp7wFUhYdFarAIavdNzBNJtMJDjaHDM5UB3wSlHQjH15sprXbnOeq6PCvTHBCEpS8V4JNsfy1UjUNNo_IFta9CMNcweDM8OxJ3PbJHNX8xZyFBwQ7AHNGtDaChV4-C1tODcuClLOJXZetixsNFqm2lP9tiSG6E5iBHzR0ko2RtnMK4jkUzXu2eaOPAeUDWNuow-gd-yZBJPZ44IQ4BPq1JcZxbgaKq3uLRzJwnNmkwvF1zOHIEVELINIoydthldR-aNcxIG8Q3AKM3LH4tVqmaUxJ5iPV30dab6vsKFwsYHZr9NGD0fuPA8--X9yVfJR4Yc08CULPYh1aTqkVtlo_1DXihCl8Gj9mQ6Poago0NBFdd-j6FY8qxVFDBmxmLzPcIhnKgR_IxXYabFGRm89dYcHIJD7cLuhNVgIZar94qBe66dLjrfZxgIp04uTYwLfNwX5GrtXVGfWz2CdFcaz1FwIoTf6B2L7M_Oasg7XjiZdKTRUjHI8bLIEx4FHVLZLO4iHWp79S9mHxc4fTbz3aFD-z50iGmnkkoEj99pYwnJ2X6NkTklaqkBrXAC3_x6vOXvB1r_V4jMr5G9DPoKiiG4fUFLBNrey_hN2R6T3lew_UZLp7X7E",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
+                data = {
+                    'balance': '0.00'
+                }
+                print(f'Endpoint => {endpoint}')
+                print(f'Headers => {headers}')
+                print(f'Data => {data}')
+                response = requests.put(endpoint, headers=headers, json=data)
+                print(f'Response => {response}')
+
+                # return # raise SystemExit(0)
+            print("All transactions collected. Navigating back to home...")
+            time.sleep(5)
+            current_app = self.DEVICE.app_current()
+            current_activity = current_app['activity']
+            if current_activity != HOME_ACTIVITY:
+                self.IS_PAUSED = True
+
+                # Press back button until the target activity is reached
+                while current_activity != HOME_ACTIVITY:
+                    if current_activity == HOME_ACTIVITY:
+                        break
+
+                    print(f"Press back button because the app is not in target activity.")
+                    self.DEVICE.press("back")
+                    time.sleep(1)
+                    current_app = self.DEVICE.app_current()
+                    current_activity = current_app['activity']
+
+                self.IS_PAUSED = False
+            
+            print("Navigated back to home.")
+            elapsed_time = time.time() - start_time
+            cycle_delay_time = max(COLLECT_DURATION - elapsed_time, 0)
+            cycle_pause_time = random.randint(MINIMUM_PAUSE_TIME, MAXIMUM_PAUSE_TIME)
+
+            countdown = cycle_delay_time + cycle_pause_time
+            print(f"Sleep for {countdown} seconds...", end="\r")
+            while countdown > 0:
+                if countdown < 4:
+                    print(f"Collecting transactions in {countdown} seconds...", end="\r")
+                time.sleep(1)
+                countdown -= 1
+        except Exception as e:
+            print(e)
+            self.__handle_error(e)
 
 
     def _process_memo(self, title_text, memo_text):
@@ -757,7 +729,7 @@ class RetrieveTransactionHistory:
             match = re.search(r'BFS\s{1,}\w{2,}.*UN\s{1,}(\S.*)$', memo_text)
             if match:
                 return match.group(1)
-        elif (title_text in ["OVERBOOKING TO SA", "OVERBOOKING", "OVERBOOKING FROM SA", "OVERBOOKING FROM CA"]) and memo_text != "?":
+        elif (title_text in ["OVERBOOKING TO SA", "OVERBOOKING", "OVERBOOKING FROM SA", "OVERBOOKING FROM CA", "OVERBOOKING CR"]) and memo_text != "?":
             match = re.search(r'(?<=TRF)\s{1,}\w{2,}\s{1,}(\S.*)$', memo_text)
             if match:
                 return match.group(1)
@@ -802,7 +774,7 @@ class RetrieveTransactionHistory:
             self.__watcher_check_popup()
             self.__initialize()
             time.sleep(1)
-
+           
             while datetime.now(TZ) < session_expiry:
                 if self.IS_TASK_COMPLETE:
                     return True
@@ -826,15 +798,25 @@ class RetrieveTransactionHistory:
 
                 time.sleep(1)
 
-            # print("Session expired...")
-            # print("Session expired. Restarting task...")
-            # app.send_task(self.TASK_NAME, args=[self.SERIAL, self.PIN, self.ACCOUNT_ID], queue=self.TASK_QUEUE, countdown=3)
+            print("Session expired...")
+            print("Session expired. Restarting task...")
+            app.send_task(self.TASK_NAME, args=[self.SERIAL, self.PIN, self.ACCOUNT_ID], queue=self.TASK_QUEUE, countdown=3)
+            
+        except (TimeoutError, HTTPTimeoutError, UiObjectNotFoundError, XPathElementNotFoundError) as e:
+            print(f"Timeout occurred: {e}")
+            self.__handle_error(e)
+            # Re-queue the task in Celery
+            app.send_task(
+                self.TASK_NAME,
+                args=[self.SERIAL, self.PIN, self.ACCOUNT_ID],
+                queue=self.TASK_QUEUE,
+                countdown=3,
+            )
         except Exception as e:
             print(e)
             self.__handle_error(e)
         finally:
-            print("Session expired. Finalizing...")
-            self.__finalize()
+            pass
 
 
 class Automator():
@@ -923,5 +905,5 @@ class Automator():
 #     #     sys.exit(1)
  
     
-#     test_redis_connection()
-#     Automator.get_statements("some_task", "100.79.114.17:5556", "Ningsih221kr", "1234567890")
+    # test_redis_connection()
+    # Automator.get_statements("some_task", "100.79.114.17:5556", "Ningsih221kr", "763817830600")
