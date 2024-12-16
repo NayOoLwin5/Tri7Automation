@@ -201,7 +201,7 @@ class TransactionChangeTracker:
                 transaction_remark = transaction_remark_group[2].strip().upper()
                 transaction_code = transaction_remark_group[3].strip().upper()
                 transaction_amount = transaction_parts[3]
-                transaction_balance = '0.00'
+                transaction_balance = f'{float(0):.2f}'
                 transaction_type = transaction_parts[2]
 
                 transaction_date_object = datetime.strptime(transaction_date, "%Y-%m-%d").date()
@@ -642,6 +642,11 @@ class RetrieveTransactionHistory:
                 tracker = TransactionChangeTracker(self.TASK_NAME, self.ACCOUNT_ID)
                 tracker.process_transaction_round(final_transactions)
 
+                current_balance = self.DEVICE.xpath('//android.widget.TextView[@resource-id="id.co.cimbniaga.mobile.android:id/tv_amount"]').get_text()
+                account_balance_text = current_balance.replace(',', '')
+                account_balance_number = round(float(account_balance_text), 2)
+                print(f'current_balance => {account_balance_number}')
+
                 transformed_transactions = tracker.transform_transactions()
                 print(f'transformed_transactions => {transformed_transactions}')
 
@@ -674,7 +679,7 @@ class RetrieveTransactionHistory:
                     "Content-Type": "application/json"
                 }
                 data = {
-                    'balance': '0.00'
+                    'balance': account_balance_number
                 }
                 print(f'Endpoint => {endpoint}')
                 print(f'Headers => {headers}')
